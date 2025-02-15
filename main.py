@@ -7,9 +7,9 @@ import threading
 
 PATTERN_SIZE = (8, 5)
 
-SQUARE_SIZE = 25    # in mm
-CUBE_SIZE = 25      # in mm
-AXIS_LENGTH = 75    # Axis length is set to 3 times SQUARE_SIZE for better visibility
+SQUARE_SIZE = 28    # in mm
+CUBE_SIZE = 28      # in mm
+AXIS_LENGTH = 84    # Axis length is set to 3 times SQUARE_SIZE for better visibility
 
 def click_corners(event, x, y, flags, param):
     points = param
