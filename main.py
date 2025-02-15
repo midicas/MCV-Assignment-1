@@ -7,9 +7,9 @@ import threading
 
 PATTERN_SIZE = (8, 5)
 
-SQUARE_SIZE = 1
-CUBE_SIZE = 1
-AXIS_LENGTH = 3
+SQUARE_SIZE = 25    # in mm
+CUBE_SIZE = 25      # in mm
+AXIS_LENGTH = 75    # Axis length is set to 3 times SQUARE_SIZE for better visibility
 
 def click_corners(event, x, y, flags, param):
     points = param
@@ -125,20 +125,21 @@ def calibrationRun(folder):
             dist_coeffs=distCoeffs)
 
     return cameraMatrix,distCoeffs
+    
 def drawAxes(img,cameraData):
-    #Axis representation
+    # Axis representation
     axis = np.float32([[AXIS_LENGTH, 0, 0],  # X-axis (red)
                         [0, AXIS_LENGTH, 0],  # Y-axis (green)
                         [0, 0,-AXIS_LENGTH]]).reshape(-1,3)
 
     cameraMatrix,distCoeffs,rvecs,tvecs,corners = cameraData
 
-    #Project 3D points to 2D space
+    # Project 3D points to 2D space
     imgpts, _ = cv2.projectPoints(axis, rvecs, tvecs, cameraMatrix, distCoeffs)
     # Convert 2D points to integer values
     imgpts = imgpts.astype(int)
 
-    #Draw axis from origin point
+    # Draw axis from origin point
     origin = tuple(corners[0].ravel().astype(int)) 
     cv2.line(img, origin, tuple(imgpts[0].ravel()), (0, 0, 255), 5)  # X-axis (red)
     cv2.line(img, origin, tuple(imgpts[1].ravel()), (0, 255, 0), 5)  # Y-axis (green)
@@ -147,36 +148,42 @@ def drawAxes(img,cameraData):
     return img
 
 def drawCube(img,cameraData):
-    #Points of the cube
+    # Points of the cube
     cubeCorners = np.float32([[0, 0, 0],[0, CUBE_SIZE, 0], [CUBE_SIZE, CUBE_SIZE, 0], [CUBE_SIZE, 0, 0],
-                        [0, 0, -CUBE_SIZE], [0, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, 0, -CUBE_SIZE] ])
+                        [0, 0, -CUBE_SIZE], [0, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, 0, -CUBE_SIZE]])
     
     cameraMatrix,distCoeffs,rvecs,tvecs,_ = cameraData
-    #Project 3D points to 2D space
+
+    # Correction lens distortion
+    testImg = cv2.undistort(testImg, cameraMatrix, distCoeffs)
+    
+    # Project 3D points to 2D space
     cubepts, _ = cv2.projectPoints(cubeCorners, rvecs, tvecs, cameraMatrix, distCoeffs)
 
     # Convert 2D points to integer values
     cubepts = np.int32(cubepts).reshape(-1, 2)
-    # Draw the polygon
+    
+    # Draw the cube edges
     edges = [(0, 1), (1, 2), (2, 3), (3, 0),  # Base
                 (4, 5), (5, 6), (6, 7), (7, 4),  # Top
                 (0, 4), (1, 5), (2, 6), (3, 7)]  # Connections
     for edge in edges:
         cv2.line(img, tuple(cubepts[edge[0]]), tuple(cubepts[edge[1]]), (255, 255, 255), 5)
 
-    # Calculate the color of the top plane
+    # Calculate the color of the top plane based on distance, orientation and position
     top_plane = np.array([cubepts[4], cubepts[5], cubepts[6], cubepts[7]], dtype=np.int32)
 
+    # Calculate color in HSV space
     # Distance to camera, using Z-value of the tvecs
     distance = np.linalg.norm(tvecs)
-    v = max(0, min(255, int(255 * (1 - distance / 4000))))  # V between 0 and 255
+    v = max(0, min(255, int(255 * (1 - distance / 4000))))  # Value based on distance
 
     # Orientation, angle between normal and viewing direction
     z_axis = np.array([0, 0, 1])	# A unit vector along the z-axis in world coordinates, perpendicular to the chessboard
     R, _ = cv2.Rodrigues(rvecs)	# Convert rotation vector to a rotation matrix
-    normal = R @ z_axis		# The normal of the top plane in camera coordinates, Z-axis will be rotated
+    normal = R @ z_axis		# Normal of the top plane in camera coordinates, Z-axis will be rotated
     # The Z-component of the normal determines how straight the plane looks to the camera
-    angle = np.degrees(np.arccos(np.dot(normal, [0, 0, 1])))	# [0, 0, 1] is the Z-axis of the camera coordinates, np.dot(normal, [0, 0, 1]) calculates the cosinus of the angle between the normale and the Z-axis of the camera, np.arccos() is the angle in radians and np.degrees gives the angle in degrees
+    angle = np.degrees(np.arccos(np.dot(normal, [0, 0, 1])))	# [0, 0, 1] is the Z-axis of the camera coordinates, np.dot(normal, [0, 0, 1]) calculates the cosinus of the angle between the normal and the Z-axis of the camera, np.arccos() is the angle in radians and np.degrees gives the angle in degrees
     s = max(0, min(255, int(255 * (1 - angle / 45))))
 
     # Hue based on position of X
@@ -190,8 +197,9 @@ def drawCube(img,cameraData):
 
 def drawImage(testImg, cameraMatrix, distCoeffs,):
     
-# 3D axes with the origin at the center of the world coordinates and a polygon on the test image
-# Color of the polygon changes with the position and orientation of the center of the top plane,    relative to the camera
+# Draws 3D axes with the origin at the center of the world coordinates and a cube on the test image
+# Camera intrinsic parameters matrix is used and the distortion coefficients for correction of lens distortion
+# Color of the top plane of the cube changes with the position and orientation of the center of the top plane relative to the camera
     realWorldPoints = np.zeros((PATTERN_SIZE[0]*PATTERN_SIZE[1], 3), np.float32)
     realWorldPoints[:, :2] = np.mgrid[0:PATTERN_SIZE[0], 0:PATTERN_SIZE[1]].T.reshape(-1, 2)
 
@@ -200,12 +208,12 @@ def drawImage(testImg, cameraMatrix, distCoeffs,):
     if corners is None:
             print("No chessboard found")
             return
-    # Calculate the position of the camera towards the chessboard
+    # Calculate the position of the camera relative to the chessboard
     ret, rvecs, tvecs = cv2.solvePnP(realWorldPoints, corners, cameraMatrix, distCoeffs)
     if not ret:
             print("Pose not found")
             return
-    #Draw axis and cube
+    # Draw 3D axis and cube on the test image
     testImg = drawAxes(testImg,(cameraMatrix,distCoeffs,rvecs,tvecs,corners))
     testImg = drawCube(testImg,(cameraMatrix,distCoeffs,rvecs,tvecs,corners))
     
