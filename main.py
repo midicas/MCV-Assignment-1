@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 import os
 import sys
+import threading
+
 
 PATTERN_SIZE = (8, 5)
 
@@ -18,7 +20,7 @@ def manual_corner_selection(img):
     """"Let users select 4 corner points of the checkerboard"""
     points = []
     clone = img.copy()
-
+    clone = cv2.resize(clone, (0, 0), fx = 0.2, fy = 0.2)
     cv2.imshow("Pick 4 corners", clone)
     cv2.setMouseCallback("Pick 4 corners", click_corners, points)
     #Collect points
@@ -27,6 +29,7 @@ def manual_corner_selection(img):
     cv2.destroyAllWindows()
 
     #Sort points such that the final list is of the form [topLeft,topRight,bottomLeft,bottomRight]
+    points = [(x*5,y*5) for x,y in points]
     points = sorted(points, key = lambda coordinate:coordinate[1])
     topPoints = points[:2]
     topPoints = sorted(topPoints)
@@ -69,18 +72,22 @@ def detectCorners(img, show_result=False):
     passed, corners = cv2.findChessboardCorners(img, PATTERN_SIZE, None)
     
     #If works refine corners 
-    if passed:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1),criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
-    #Else let user manually select corners
-    else:        
+    if not passed:
         outerCorners = manual_corner_selection(img)
         corners = interpolate_grid_corners(outerCorners)
-
+        corners = np.array(corners)
+    
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1),criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+    
     #If wanted, show found corners.
     if show_result:
         clone = img.copy()
-        cv2.drawChessboardCorners(clone, PATTERN_SIZE, corners, True)
+        clone = cv2.resize(clone, (0, 0), fx = 0.2, fy = 0.2)
+        corners2 = corners/5
+        
+        cv2.drawChessboardCorners(clone, PATTERN_SIZE, corners2, True)
+        
         cv2.imshow("Detected corners", clone)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -94,15 +101,18 @@ def calibrationRun(folder):
     realWorldPoints = np.zeros((PATTERN_SIZE[0]*PATTERN_SIZE[1],3), np.float32)
     realWorldPoints [:,:2] = np.mgrid[0:PATTERN_SIZE[0],0:PATTERN_SIZE[1]].T.reshape(-1,2) * SQUARE_SIZE
     
-    realWorldCollection = [realWorldPoints for i in images]
+    #realWorldCollection = [realWorldPoints for i in images]
+    realWorldCollection = []
     imagePoints = []
     #Build collection of all corners across images
     for fname in images:
         print(f"Processing Image: {fname}")
         path = os.path.join(folder,fname)
         img = cv2.imread(path)
+        
         corners = detectCorners(img,False)
-
+        
+        realWorldCollection.append(realWorldPoints)
         imagePoints.append(corners)
     
     #Use collection of corners to calibrate camera
@@ -115,56 +125,44 @@ def calibrationRun(folder):
             dist_coeffs=distCoeffs)
 
     return cameraMatrix,distCoeffs
-def testImage(testImg, cameraMatrix, distCoeffs,):
-    
-# 3D axes with the origin at the center of the world coordinates and a polygon on the test image
-# Color of the polygon changes with the position and orientation of the center of the top plane,    relative to the camera
-
-
-    realWorldPoints = np.zeros((PATTERN_SIZE[0]*PATTERN_SIZE[1], 3), np.float32)
-    realWorldPoints[:, :2] = np.mgrid[0:PATTERN_SIZE[0], 0:PATTERN_SIZE[1]].T.reshape(-1, 2) * SQUARE_SIZE
-
-# 3D axes of the cube
+def drawAxes(img,cameraData):
+    #Axis representation
     axis = np.float32([[AXIS_LENGTH, 0, 0],  # X-axis (red)
                         [0, AXIS_LENGTH, 0],  # Y-axis (green)
-                        [0, 0,-AXIS_LENGTH]]).reshape(-1,3) # Z-axis (blue)		# arbitrary world coordinates
+                        [0, 0,-AXIS_LENGTH]]).reshape(-1,3)
 
-    cubeCorners = np.float32([[0, 0, 0],[0, CUBE_SIZE, 0], [CUBE_SIZE, CUBE_SIZE, 0], [CUBE_SIZE, 0, 0],
-                        [0, 0, -CUBE_SIZE], [0, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, 0, -CUBE_SIZE] ])
+    cameraMatrix,distCoeffs,rvecs,tvecs,corners = cameraData
 
-    # Find corners of the chessboard
-    corners = detectCorners(testImg)
-    if corners is None:
-            print("No chessboard found")
-            return
-    # Calculate the position of the camera towards the chessboard
-    ret, rvecs, tvecs = cv2.solvePnP(realWorldPoints, corners, cameraMatrix, distCoeffs)
-    if not ret:
-            print("Pose not found")
-            return
-
-    # Project the axes and cube to 2D
+    #Project 3D points to 2D space
     imgpts, _ = cv2.projectPoints(axis, rvecs, tvecs, cameraMatrix, distCoeffs)
-    cubepts, _ = cv2.projectPoints(cubeCorners, rvecs, tvecs, cameraMatrix, distCoeffs)
-
-    
     # Convert 2D points to integer values
     imgpts = imgpts.astype(int)
-    cubepts = np.int32(cubepts).reshape(-1, 2)
-    # Draw XYZ-axes
-    origin = tuple(corners[0].ravel().astype(int)) 
-    print(cubepts)
-    print(origin)
-    cv2.line(testImg, origin, tuple(imgpts[0].ravel()), (0, 0, 255), 5)  # X-axis (red)
-    cv2.line(testImg, origin, tuple(imgpts[1].ravel()), (0, 255, 0), 5)  # Y-axis (green)
-    cv2.line(testImg, origin, tuple(imgpts[2].ravel()), (255, 0, 0), 5)  # Z-axis (blue)
 
+    #Draw axis from origin point
+    origin = tuple(corners[0].ravel().astype(int)) 
+    cv2.line(img, origin, tuple(imgpts[0].ravel()), (0, 0, 255), 5)  # X-axis (red)
+    cv2.line(img, origin, tuple(imgpts[1].ravel()), (0, 255, 0), 5)  # Y-axis (green)
+    cv2.line(img, origin, tuple(imgpts[2].ravel()), (255, 0, 0), 5)  # Z-axis (blue)
+
+    return img
+
+def drawCube(img,cameraData):
+    #Points of the cube
+    cubeCorners = np.float32([[0, 0, 0],[0, CUBE_SIZE, 0], [CUBE_SIZE, CUBE_SIZE, 0], [CUBE_SIZE, 0, 0],
+                        [0, 0, -CUBE_SIZE], [0, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, CUBE_SIZE, -CUBE_SIZE],[CUBE_SIZE, 0, -CUBE_SIZE] ])
+    
+    cameraMatrix,distCoeffs,rvecs,tvecs,_ = cameraData
+    #Project 3D points to 2D space
+    cubepts, _ = cv2.projectPoints(cubeCorners, rvecs, tvecs, cameraMatrix, distCoeffs)
+
+    # Convert 2D points to integer values
+    cubepts = np.int32(cubepts).reshape(-1, 2)
     # Draw the polygon
     edges = [(0, 1), (1, 2), (2, 3), (3, 0),  # Base
                 (4, 5), (5, 6), (6, 7), (7, 4),  # Top
                 (0, 4), (1, 5), (2, 6), (3, 7)]  # Connections
     for edge in edges:
-        cv2.line(testImg, tuple(cubepts[edge[0]]), tuple(cubepts[edge[1]]), (255, 255, 255), 5)
+        cv2.line(img, tuple(cubepts[edge[0]]), tuple(cubepts[edge[1]]), (255, 255, 255), 5)
 
     # Calculate the color of the top plane
     top_plane = np.array([cubepts[4], cubepts[5], cubepts[6], cubepts[7]], dtype=np.int32)
@@ -186,22 +184,158 @@ def testImage(testImg, cameraMatrix, distCoeffs,):
 
     # Change HSV to BGR and draw the polygon
     color = cv2.cvtColor(np.uint8([[[h, s, v]]]), cv2.COLOR_HSV2BGR)[0][0].tolist()
-    cv2.fillConvexPoly(testImg, top_plane, color)
+    cv2.fillConvexPoly(img, top_plane, color)
+    
+    return img
 
-    # Show result
-    testImg = cv2.resize(testImg, (0, 0), fx = 0.2, fy = 0.2)
-    cv2.imshow("3D", testImg)
-    cv2.waitKey(0)
+def drawImage(testImg, cameraMatrix, distCoeffs,):
+    
+# 3D axes with the origin at the center of the world coordinates and a polygon on the test image
+# Color of the polygon changes with the position and orientation of the center of the top plane,    relative to the camera
+    realWorldPoints = np.zeros((PATTERN_SIZE[0]*PATTERN_SIZE[1], 3), np.float32)
+    realWorldPoints[:, :2] = np.mgrid[0:PATTERN_SIZE[0], 0:PATTERN_SIZE[1]].T.reshape(-1, 2)
+
+    # Find corners of the chessboard
+    corners = detectCorners(testImg)
+    if corners is None:
+            print("No chessboard found")
+            return
+    # Calculate the position of the camera towards the chessboard
+    ret, rvecs, tvecs = cv2.solvePnP(realWorldPoints, corners, cameraMatrix, distCoeffs)
+    if not ret:
+            print("Pose not found")
+            return
+    #Draw axis and cube
+    testImg = drawAxes(testImg,(cameraMatrix,distCoeffs,rvecs,tvecs,corners))
+    testImg = drawCube(testImg,(cameraMatrix,distCoeffs,rvecs,tvecs,corners))
+    
+    return testImg
+    
+def webcam_calibration():
+    """
+    Function to initialize webcam, perform calibration, and then draw 3D axes on the board.
+    """
+    realWorldPoints = np.zeros((PATTERN_SIZE[0] * PATTERN_SIZE[1], 3), np.float32)
+    realWorldPoints[:, :2] = np.mgrid[0:PATTERN_SIZE[0], 0:PATTERN_SIZE[1]].T.reshape(-1, 2)
+
+    # Initialize list to store real-world points and image points
+    realWorldCollection = [realWorldPoints for _ in range(50)]
+    pointData = []
+    calibration_complete = False
+    calibration_lock = threading.Lock()  
+    cameraMatrix = None
+    distCoeffs = None
+
+    def calibration_thread(capture, frame_shape):
+        """
+        Thread function to handle the webcam calibration process.
+        Collects data (chessboard corners) and performs the calibration.
+        """
+        nonlocal calibration_complete, pointData, cameraMatrix, distCoeffs
+        
+        last_corners = None
+        threshold = 3
+        while True:
+            rval, frame = capture.read()
+            if not rval:
+                print("Error: Failed to capture image.")
+                break
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Find chessboard corners
+            found, corners = cv2.findChessboardCorners(gray, PATTERN_SIZE, None)
+
+            if found:
+                # Refine the corner positions
+                corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1),
+                                           criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+                
+                if last_corners is not None:
+                    # Skip this frame if corners are too similar
+                    corner_diff = np.linalg.norm(corners - last_corners, axis=2).mean()
+                    if corner_diff < threshold:
+                        continue  
+                last_corners = corners.copy()
+                # Collect points for calibration
+                with calibration_lock:
+                    pointData.append(corners)
+                    print(f"Found corners: {len(pointData)} / 50")
+                    
+                    if len(pointData) == 50:
+                        print("Calibrating...")
+                        _, cameraMatrix, distCoeffs, _, _ = cv2.calibrateCamera(
+                            realWorldCollection, pointData, frame_shape[1::-1], None, None)
+
+                        # Check if calibration was successful
+                        if cameraMatrix is not None and distCoeffs is not None:
+                            print("Calibration successful!")
+                            calibration_complete = True
+                        else:
+                            print("Calibration failed.")
+                        break
+    
+    
+    # Initialize webcam capture
+    capture = cv2.VideoCapture(0)
+    if not capture.isOpened():  # Check if the webcam is available
+        print("Error: Could not access the camera.")
+        return
+
+    # Start the calibration thread
+    calibration_thread_instance = threading.Thread(target=calibration_thread, args=(capture, capture.read()[1].shape))
+    calibration_thread_instance.start()
+
+    # Main loop to continuously display webcam feed
+    while True:
+        rval, frame = capture.read()
+        if not rval:
+            print("Error: Failed to capture image.")
+            break
+
+        if calibration_complete:
+            # Once calibration is done, draw on frame
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            found, corners = cv2.findChessboardCorners(gray,PATTERN_SIZE, None)
+
+            if found:
+                corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1),
+                                        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+                
+                ret, rvecs, tvecs = cv2.solvePnP(realWorldPoints, corners, cameraMatrix, distCoeffs)
+                if ret:
+                    # Project the 3D axis points onto the 2D image
+                    frame = drawAxes(frame,(cameraMatrix,distCoeffs,rvecs,tvecs,corners))
+                    frame = drawCube(frame,(cameraMatrix,distCoeffs,rvecs,tvecs,corners))
+
+        cv2.imshow("Camera Preview", frame)
+        # Exit the loop when ESC is pressed
+        key = cv2.waitKey(1)
+        if key == 27:  # ESC key to exit
+            print("Exiting...")
+            break
+
+    # Release the capture and close windows
+    capture.release()
+    cv2.destroyAllWindows()
+    calibration_thread_instance.join()  # Wait for the calibration thread to finish
+
+
+
 
 if __name__ == "__main__":
     folder_path = sys.argv[1]
-    #cameraMatrix,distCoeffs = calibrationRun(folder_path)
-    calibration_data = np.load("Run1.npz")
-    cameraMatrix = calibration_data["camera_matrix"]
-    distCoeffs = calibration_data["dist_coeffs"]
-    testImg = cv2.imread("test.jpeg")
-    testImage(testImg,cameraMatrix,distCoeffs)
-
+    if folder_path == "webcam":
+        webcam_calibration()
+    else:
+        cameraMatrix,distCoeffs = calibrationRun(folder_path)
+        testImg = cv2.imread("test_image.jpeg")
+        testImg = drawImage(testImg,cameraMatrix,distCoeffs)
+        cv2.imwrite(folder_path+".png",testImg)
+        testImg = cv2.resize(testImg, (0, 0), fx = 0.2, fy = 0.2)
+        cv2.imshow("3D", testImg)
+        cv2.waitKey(0)
+    
 
 
 
